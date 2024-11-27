@@ -3,20 +3,9 @@
     #include <pthread.h>
     #include <bits/stdc++.h>
     #include <cuda_runtime.h>
-    #include "libarff/arff_parser.h"
-    #include "libarff/arff_data.h"
+ 
 
 
-    struct ThreadData{
-        ArffData *train;  // Pointer to the first array
-        ArffData *test;  // Pointer to the second array
-        int* predictions;    // Start index
-        int TRstart;  //start index of array
-        int TRend;      // End index
-        int TTstart;
-        int TTend;
-        int k;  
-    } ;
 
 
 
@@ -33,6 +22,27 @@
         return sqrt(sum);
     }
 
+    __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets, int totalRecords){
+        //we know that tid will be the row
+        int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+        if(tid < totalRecords){
+            //printf("our offest is %d\n", d_Offsets[tid]);
+            char* line = inData + d_Offsets[tid];
+            //const char* current = line;
+            if(tid == 2){
+                for (char* current = line; *current != '\n' && *current != '\0'; current++) {
+                    printf("%c", *current);
+                }
+                // while (*current != '\n' && *current != '\0') {
+                //     putchar(*current);
+                //     current++;
+                // }
+            }
+        }
+
+
+    }
 
 
     __global__ void printStuff(float *test_matrix, float *train_matrix, 
@@ -152,8 +162,8 @@
     }
 
     // Implements a threaded kNN where for each candidate query an in-place priority queue is maintained to identify the nearest neighbors
-    int* KNN(ArffData* train, ArffData* test, int k, int num_threads) {     
-        
+    int KNN() {     
+         int lineCountInDataset = 1692082;
         const char* inDataFilePath = "sortedDataBase.txt";
 
         FILE* file = fopen(inDataFilePath, "r");
@@ -162,23 +172,55 @@
         fseek(file, 0, SEEK_END);
         size_t file_size = ftell(file);
         rewind(file);
+
+        char* h_buffer = (char*)malloc(file_size);
+        fread(h_buffer, 1, file_size, file);
         
 
-            // Allocate memory to hold the file contents
+        // Count the number of lines and create offsets
+        int* h_offsets = (int*)malloc((file_size + 1) * sizeof(int));
+        int lineCount = 0;
+        h_offsets[lineCount++] = 0; // First line starts at the beginning
+        
+        for (size_t i = 0; i < file_size; i++) {
+            //printf("are we in size?");
+            if (h_buffer[i] == '\n') {
+                //printf("we are in the newline stuff");
+                h_offsets[lineCount++] = i + 1; // Next line starts after '\n'
+               
+            }
+        }
+
+
+
+        // Allocate memory to hold the file contents
         char* h_text = (char*)malloc(file_size);
 
         // Read the file into the host buffer
         fread(h_text, 1, file_size, file);
-        fclose(file);
+        //fclose(file);
 
         // Allocate memory on the GPU
         char* d_text;
-        cudaMalloc((void**)&d_text, file_size);
-
+        int* d_offsets; 
+        cudaMalloc(&d_text, file_size);
+        cudaMalloc(&d_offsets, lineCountInDataset * sizeof(int));
         // Copy the file contents to the GPU
-        cudaMemcpy(d_text, h_text, file_size, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_text, h_buffer, file_size, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_offsets, h_offsets, lineCountInDataset * sizeof(int), cudaMemcpyHostToDevice);
+        int threadsPerBlock = 256;
+        int blocksPerGrid = ((lineCountInDataset + threadsPerBlock) - 1) /  threadsPerBlock; //how do we know how many blocks we need to use?
 
-        
+        //1_692_082 lineCount of Sorted DataBase
+        int minItemCount = 3; //setting the minimum # of items to be considered an itemset
+
+        //here I would want to generate all itemsets
+
+        processItemSets<<<blocksPerGrid, threadsPerBlock>>>(d_text, minItemCount, d_offsets, lineCountInDataset);
+        cudaDeviceSynchronize();
+        return 1;
+
+
 
         //so essentially my goal is to produce all of these itemssets 
         //i want to take a previous gpu solution and use NVIDIA's hardware based 
@@ -293,78 +335,12 @@
         // return predictions;
     }
 
-    int* computeConfusionMatrix(int* predictions, ArffData* dataset)
-    {
-        int* confusionMatrix = (int*)calloc(dataset->num_classes() * dataset->num_classes(), sizeof(int)); // matrix size numberClasses x numberClasses
-        
-        for(int i = 0; i < dataset->num_instances(); i++) { // for each instance compare the true class and predicted class    
-            int trueClass = dataset->get_instance(i)->get(dataset->num_attributes() - 1)->operator int32();
-            int predictedClass = predictions[i];
-            //printf("predictions[%d] = %d , true class was %d\n", i, predictions[i], trueClass);
-            confusionMatrix[trueClass*dataset->num_classes() + predictedClass]++;
-        }
-        
-    
-        return confusionMatrix;
-    }
-
-    float computeAccuracy(int* confusionMatrix, ArffData* dataset)
-    {
-        int successfulPredictions = 0;
-        
-        for(int i = 0; i < dataset->num_classes(); i++) {
-            successfulPredictions += confusionMatrix[i*dataset->num_classes() + i]; // elements in the diagonal are correct predictions
-        }
-        
-        return 100 * successfulPredictions / (float) dataset->num_instances();
-    }
-
     int main(int argc, char *argv[])
     {
-        if(argc != 5)
-        {
-            printf("Usage: ./program datasets/train.arff datasets/test.arff k num_threads");
-            exit(0);
-        }
-
-        // k value for the k-nearest neighbors
-        int k = strtol(argv[3], NULL, 10);
-        int num_threads = strtol(argv[4], NULL, 10);
-
-        // Open the datasets
-        ArffParser parserTrain(argv[1]);
-        ArffParser parserTest(argv[2]);
-        ArffData *train = parserTrain.parse();
-        ArffData *test = parserTest.parse();
         
-        struct timespec start, end;
-        int* predictions = NULL;
-        
-        // Initialize time measurement
-        clock_gettime(CLOCK_MONOTONIC_RAW, &start);
-        
-        predictions = KNN(train, test, k, num_threads);
-        
-        // Stop time measurement
-        clock_gettime(CLOCK_MONOTONIC_RAW, &end);
 
-        // Compute the confusion matrix
-        int* confusionMatrix = computeConfusionMatrix(predictions, test);
-        // Calculate the accuracy
-        float accuracy = computeAccuracy(confusionMatrix, test);
-
-        uint64_t time_difference = (1000000000L * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec) / 1e6;
-
-        printf("The %i-NN classifier for %lu test instances and %lu train instances required %llu ms CPU time for threaded with %d threads. Accuracy was %.2f\%\n", k, test->num_instances(), train->num_instances(), (long long unsigned int) time_difference, accuracy, num_threads);
-
-        // Print the predictions array
-        // printf("Predictions array after cudaMemcpy:\n");
-        // for (int i = 0; i < test->num_instances(); i++) {
-        //     printf("predictions[%d] = %d\n", i, predictions[i]);
-        // }
-
-        free(predictions);
-        free(confusionMatrix);
+        int x = KNN();
+        return -1;  
     }
 
     /*  // Example to print the test dataset
