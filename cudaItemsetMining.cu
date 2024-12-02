@@ -3,14 +3,11 @@
     #include <pthread.h>
     #include <bits/stdc++.h>
     #include <cuda_runtime.h>
- 
-
-
 
 
 
     // Calculates the distance between two instances
-    __device__ float distance(float* instance_A, float* instance_B, int num_attributes) {
+    __device__ float generateItemSet(float* instance_A, float* instance_B, int num_attributes) {
         float sum = 0;
         
         for (int i = 0; i < num_attributes-1; i++) {
@@ -25,23 +22,45 @@
     __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets, int totalRecords){
         //we know that tid will be the row
         int tid = blockIdx.x * blockDim.x + threadIdx.x;
+        extern __shared__ int sharedArray[];
+        int items[32]; // Assuming a maximum of 32 items per transaction
+        int itemCount = 0;
+        int number = 0;
+        bool inNumber = false;
 
         if(tid < totalRecords){
             //printf("our offest is %d\n", d_Offsets[tid]);
             char* line = inData + d_Offsets[tid];
             //const char* current = line;
-            if(tid == 2){
+            if(tid == 23645){
+                //int maxSetSize = 0;
+                // Parse the line to extract items
                 for (char* current = line; *current != '\n' && *current != '\0'; current++) {
-                    printf("%c", *current);
+                    if (*current >= '0' && *current <= '9') {
+                        number = number * 10 + (*current - '0');
+                        inNumber = true;
+                    } else if (inNumber) {
+                        items[itemCount++] = number;
+                        number = 0;
+                        inNumber = false;
+                    }
                 }
-                // while (*current != '\n' && *current != '\0') {
-                //     putchar(*current);
-                //     current++;
-                // }
+                if (inNumber) {
+                    items[itemCount++] = number;
+                }
+                // Generate all subsets
+                int totalSubsets = 1 << itemCount; // 2^itemCount
+                for (int mask = 0; mask < totalSubsets; mask++) {
+                    printf("{ ");
+                    for (int i = 0; i < itemCount; i++) {
+                        if (mask & (1 << i)) { 
+                            printf("%d ", items[i]);
+                        }
+                    }
+                    printf("}\n");
+                }
             }
         }
-
-
     }
 
 
@@ -88,8 +107,8 @@
 
             
             for(int keyIndex = 0; keyIndex < train_num_instances; keyIndex++) {
-                   
-                float dist = distance(&test_matrix[queryIndex*num_attributes], &train_matrix[keyIndex*num_attributes], num_attributes);
+                  float dist = 1; 
+                //float dist = distance(&test_matrix[queryIndex*num_attributes], &train_matrix[keyIndex*num_attributes], num_attributes);
                 
                 if(idx == 41){
                     //printf("getting the distance at idx = %d and it was %.3f and total train size is %d num attributes is %d key index is %d\n",idx, dist, testNumInstances, num_attributes, keyIndex);
@@ -100,7 +119,7 @@
                 //printf("our distance was %.3f, num classes is %d\n", dist, num_classes);
                 // Add to our candidates
                 for(int c = 0; c < k; c++){
-                    if(dist < candidates[2*c]) {
+                    if(0 < candidates[2*c]) {
                         // Found a new candidate
                         // Shift previous candidates down by one
                         for(int x = k-2; x >= c; x--) {
@@ -226,6 +245,13 @@
         //i want to take a previous gpu solution and use NVIDIA's hardware based 
         //dynamic programming APIs 
         //we send the transactional database to the GPU
+        
+        //1. We want to have a hashtable (key, value pairs)
+        //our keys will be our itsemset, and our value will be the count 
+        //we will do this for each itsemset and transaction
+        
+        //each thread will then reduce the hashtable into the shared memory
+        //maybe we should begin with a pure list?
         //
 
     
