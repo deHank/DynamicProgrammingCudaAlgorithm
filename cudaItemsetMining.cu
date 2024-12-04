@@ -19,7 +19,7 @@ __device__ float generateItemSet(float* instance_A, float* instance_B, int num_a
     return sqrt(sum);
 }
 
-__global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets, int totalRecords){
+__global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets, int totalRecords, cuco::dynamic_map<int, int>* hashmaps){
     //we know that tid will be the row
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     extern __shared__ int sharedArray[];
@@ -28,11 +28,17 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
     int number = 0;
     bool inNumber = false;
 
+    //cuco::dynamic_map<int, int>& blockMap = hashmaps[blockIdx.x];
+
+    extern __shared__ int sharedMemory[];
+    extern __shared__ int offsetFromStart[]; //offset in shared memory, where each thread 
+
+
     if(tid < totalRecords){
         //printf("our offest is %d\n", d_Offsets[tid]);
         char* line = inData + d_Offsets[tid];
         //const char* current = line;
-        if(tid == 23645){
+        
             //int maxSetSize = 0;
             // Parse the line to extract items
             for (char* current = line; *current != '\n' && *current != '\0'; current++) {
@@ -48,21 +54,28 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
             if (inNumber) {
                 items[itemCount++] = number;
             }
+
+
             // Generate all subsets
             int totalSubsets = 1 << itemCount; // 2^itemCount
+            offsetFromStart[threadIdx.x] = pow(2, itemCount);
+
             for (int mask = 0; mask < totalSubsets; mask++) {
                 int lengthOfKey = 0;
-                printf("{ ");
+                //printf("{ ");
                 for (int i = 0; i < itemCount; i++) {
                     char* subSet;
                     if (mask & (1 << i)) { 
-
-                        printf("%d ", items[i]);
+                        if(tid == 23645){
+                            printf("%d ", items[i]);
+                        }
                     }
                 }
-                printf("}\n");
+                //printf("}\n");
             }
-            //syncThreads();
+            __syncthreads();
+        if(blockIdx.x == 100){
+            printf("block offset to tid %d is %d\n", threadIdx.x, offsetFromStart[threadIdx.x]);
         }
     }
 }
@@ -276,7 +289,7 @@ int KNN() {
 
 
 
-    processItemSets<<<blocksPerGrid, threadsPerBlock>>>(d_text, minItemCount, d_offsets, lineCountInDataset);
+    processItemSets<<<blocksPerGrid, threadsPerBlock>>>(d_text, minItemCount, d_offsets, lineCountInDataset, d_hashmaps);
     cudaDeviceSynchronize();
     return 1;
 
