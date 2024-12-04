@@ -55,30 +55,43 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
                 items[itemCount++] = number;
             }
 
-
             // Generate all subsets
             int totalSubsets = 1 << itemCount; // 2^itemCount
             offsetFromStart[threadIdx.x] = pow(2, itemCount);
             __syncthreads();
             if(tid == 23640){
                 int beginningOffset = 0;
-                for (int mask = 0; mask < totalSubsets; mask++) {
+              for (int mask = 0; mask < totalSubsets; mask++) {
                     int lengthOfKey = 0;
-                    printf("{ ");
+                    int index = 0;
+                    char* sentence = (char*) malloc(2056 * sizeof(char));
+
                     for (int i = 0; i < itemCount; i++) {
-                        char* subSet;
                         if (mask & (1 << i)) { 
-                            
-                                printf("%d ", items[i]);
-                            
+                            // store the subset as int in var
+                            int subset = items[i];
+                            int count = 0; // keeps track of subset's length of characters
+                            while (subset != 0) {
+                                count++;
+                                subset = subset / 10; 
+                            }
+
+                            // add each characrter
+                            subset = items[i];
+                            for (int h = 0; h < count; h++) {
+                                int num = subset; 
+                                for (int g = 0; g < h; g++) { num = num / 10; }
+                                num = num % 10; 
+
+                                sentence[index] = num + '0';
+                                index++;
+                            } sentence[index] = ' '; index++; 
                         }
-
-                        //suppose I had the concatinated string here
-                        
-                        
-
                     }
-                    printf("}\n");
+                    
+                    //suppose I had the concatinated string here
+                    printf("Sentence: %s \n", sentence);
+                    free(sentence);
                 }
                 for(int j = 0; j < threadIdx.x; j++){
                     beginningOffset = beginningOffset + offsetFromStart[j];
