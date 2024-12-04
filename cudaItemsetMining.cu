@@ -59,22 +59,34 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
             // Generate all subsets
             int totalSubsets = 1 << itemCount; // 2^itemCount
             offsetFromStart[threadIdx.x] = pow(2, itemCount);
-
-            for (int mask = 0; mask < totalSubsets; mask++) {
-                int lengthOfKey = 0;
-                //printf("{ ");
-                for (int i = 0; i < itemCount; i++) {
-                    char* subSet;
-                    if (mask & (1 << i)) { 
-                        if(tid == 23645){
-                            printf("%d ", items[i]);
-                        }
-                    }
-                }
-                //printf("}\n");
-            }
             __syncthreads();
-        if(blockIdx.x == 100){
+            if(tid == 23640){
+                int beginningOffset = 0;
+                for (int mask = 0; mask < totalSubsets; mask++) {
+                    int lengthOfKey = 0;
+                    printf("{ ");
+                    for (int i = 0; i < itemCount; i++) {
+                        char* subSet;
+                        if (mask & (1 << i)) { 
+                            
+                                printf("%d ", items[i]);
+                            
+                        }
+
+                        //suppose I had the concatinated string here
+                        
+                        
+
+                    }
+                    printf("}\n");
+                }
+                for(int j = 0; j < threadIdx.x; j++){
+                    beginningOffset = beginningOffset + offsetFromStart[j];
+                }
+                printf("we will begin to write into the shared memory at %d\n", beginningOffset);
+
+            }
+        if(tid == 23640){
             printf("block offset to tid %d is %d\n", threadIdx.x, offsetFromStart[threadIdx.x]);
         }
     }
