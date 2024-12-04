@@ -51,10 +51,12 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
             // Generate all subsets
             int totalSubsets = 1 << itemCount; // 2^itemCount
             for (int mask = 0; mask < totalSubsets; mask++) {
+                int lengthOfKey = 0;
                 printf("{ ");
                 for (int i = 0; i < itemCount; i++) {
                     char* subSet;
                     if (mask & (1 << i)) { 
+
                         printf("%d ", items[i]);
                     }
                 }
@@ -236,6 +238,43 @@ int KNN() {
     int minItemCount = 3; //setting the minimum # of items to be considered an itemset
 
     //here I would want to generate all itemsets
+    // Define sentinel values
+    constexpr int empty_key = -1;   // An invalid key value
+    constexpr int empty_value = -1; // An invalid value
+    constexpr int erased_key = -2;  // An erased key marker
+
+    // Initial capacity of the map
+    std::size_t initial_capacity = 1024;
+
+    // Create the map
+    cuco::dynamic_map<int, int> global_map(
+        initial_capacity,                // Initial capacity
+        cuco::empty_key{empty_key},      // Empty key sentinel
+        cuco::empty_value{empty_value},  // Empty value sentinel
+        cuco::erased_key{erased_key}     // Erased key sentinel
+    );
+
+
+    // Allocate memory for the hashmaps on the device
+    cuco::dynamic_map<int, int>* d_hashmaps;
+    int numHashmaps = blocksPerGrid;
+
+    cudaMalloc(&d_hashmaps, numHashmaps * sizeof(cuco::dynamic_map<int, int>));
+
+    // Initialize hashmaps on the host
+    for (int i = 0; i < numHashmaps; i++) {
+        cuco::dynamic_map<int, int> h_map(
+            initial_capacity,
+            cuco::empty_key{empty_key},
+            cuco::empty_value{empty_value},
+            cuco::erased_key{erased_key}
+        );
+
+        // Copy the constructed hashmap to the device
+        cudaMemcpy(&d_hashmaps[i], &h_map, sizeof(cuco::dynamic_map<int, int>), cudaMemcpyHostToDevice);
+    }
+
+
 
     processItemSets<<<blocksPerGrid, threadsPerBlock>>>(d_text, minItemCount, d_offsets, lineCountInDataset);
     cudaDeviceSynchronize();
