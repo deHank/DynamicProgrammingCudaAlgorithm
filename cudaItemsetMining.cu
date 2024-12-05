@@ -6,7 +6,7 @@
 #include <cuco/dynamic_map.cuh>
 
 
-#define MAX_NODES 2048  // Maximum nodes in the FP-Tree
+#define MAX_NODES 6000  // Maximum nodes in the FP-Tree
 #define EMPTY -1
 
 
@@ -56,7 +56,7 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
     if (tid < totalRecords) {
         // Parse the transaction data
         char* line = inData + d_Offsets[tid];
-        int items[32];  // Local array to store items in the transaction
+        int items[64];  // Local array to store items in the transaction
         int itemCount = 0;
         int number = 0;
         bool inNumber = false;
@@ -89,7 +89,7 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
                     while (childNode != EMPTY && itemsInNode[childNode] != item) {
                         childNode = nextSibling[childNode];
                     }
-
+                    
                     // If the item doesn't exist, create a new node
                     if (childNode == EMPTY) {
                         int newNodeIndex = atomicAdd(nodeCounter, 1);
@@ -122,13 +122,15 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
         __syncthreads();
 
         // Debugging: Print the FP-Tree for this block (only one thread does this)
-        if (tid == 65000) {
+        if (tid == 0) {
             printf("FP-Tree for Block %d:\n", blockIdx.x);
             for (int i = 0; i < *nodeCounter; i++) {
                 printf("Node %d: Item=%d, Count=%d, Parent=%d, FirstChild=%d, NextSibling=%d\n",
                     i, itemsInNode[i], counts[i], parents[i], firstChild[i], nextSibling[i]);
             }
         }
+
+        __syncthreads();
     }
 
 
@@ -290,7 +292,7 @@ int KNN() {
     // Read the file into the host buffer
     fread(h_text, 1, file_size, file);
     //fclose(file);
-    size_t sharedMemSize = (5 * MAX_NODES + 1) * sizeof(int);  // 5 arrays + nodeCounter
+    size_t sharedMemSize = (6 * MAX_NODES) * sizeof(int) + 1 * sizeof(int);  // 5 arrays + nodeCounter
     // Allocate memory on the GPU
     char* d_text;
     int* d_offsets; 
@@ -299,14 +301,14 @@ int KNN() {
     // Copy the file contents to the GPU
     cudaMemcpy(d_text, h_buffer, file_size, cudaMemcpyHostToDevice);
     cudaMemcpy(d_offsets, h_offsets, lineCountInDataset * sizeof(int), cudaMemcpyHostToDevice);
-    int threadsPerBlock = 256;
+    int threadsPerBlock = 32;
     int blocksPerGrid = ((lineCountInDataset + threadsPerBlock) - 1) /  threadsPerBlock; //how do we know how many blocks we need to use?
     printf("number of threads is roughly %d\n", threadsPerBlock*blocksPerGrid);
     //1_692_082 lineCount of Sorted DataBase
     int minItemCount = 3; //setting the minimum # of items to be considered an itemset
 
     //here I would want to generate all itemsets
-
+    cudaFuncSetAttribute(processItemSets, cudaFuncAttributeMaxDynamicSharedMemorySize, 164 * 1024);
     processItemSets<<<blocksPerGrid, threadsPerBlock, sharedMemSize>>>(d_text, minItemCount, d_offsets, lineCountInDataset);
     cudaDeviceSynchronize();
     return 1;
