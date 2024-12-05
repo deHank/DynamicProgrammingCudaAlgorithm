@@ -6,6 +6,10 @@
 #include <cuco/dynamic_map.cuh>
 
 
+#define MAX_NODES 2048  // Maximum nodes in the FP-Tree
+#define EMPTY -1
+
+
 // Calculates the distance between two instances
 __device__ float generateItemSet(float* instance_A, float* instance_B, int num_attributes) {
     float sum = 0;
@@ -19,95 +23,121 @@ __device__ float generateItemSet(float* instance_A, float* instance_B, int num_a
     return sqrt(sum);
 }
 
-__global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets, int totalRecords, cuco::dynamic_map<int, int>* hashmaps){
-    //we know that tid will be the row
+__global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets, int totalRecords) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    extern __shared__ int sharedArray[];
-    int items[32]; // Assuming a maximum of 32 items per transaction
-    int itemCount = 0;
-    int number = 0;
-    bool inNumber = false;
 
-    //cuco::dynamic_map<int, int>& blockMap = hashmaps[blockIdx.x];
-
+    // Shared memory is treated as a single contiguous block
     extern __shared__ int sharedMemory[];
-    extern __shared__ int offsetFromStart[]; //offset in shared memory, where each thread 
 
+    // Assign sections of shared memory to arrays
+    int* itemsInNode = &sharedMemory[0];                       // Item at each node
+    int* counts = &sharedMemory[MAX_NODES];                    // Support count at each node
+    int* parents = &sharedMemory[2 * MAX_NODES];               // Parent index for each node
+    int* firstChild = &sharedMemory[3 * MAX_NODES];            // First child index for each node
+    int* nextSibling = &sharedMemory[4 * MAX_NODES];           // Next sibling index for each node
+    int* nodeCounter = &sharedMemory[5 * MAX_NODES];           // Counter for nodes in the block (single value)
 
-    if(tid < totalRecords){
-        //printf("our offest is %d\n", d_Offsets[tid]);
-        char* line = inData + d_Offsets[tid];
-        //const char* current = line;
-        
-            //int maxSetSize = 0;
-            // Parse the line to extract items
-            for (char* current = line; *current != '\n' && *current != '\0'; current++) {
-                if (*current >= '0' && *current <= '9') {
-                    number = number * 10 + (*current - '0');
-                    inNumber = true;
-                } else if (inNumber) {
-                    items[itemCount++] = number;
-                    number = 0;
-                    inNumber = false;
-                }
-            }
-            if (inNumber) {
-                items[itemCount++] = number;
-            }
+    // Initialize the shared memory (done by thread 0 in each block)
+    if (threadIdx.x == 0) {
+        //printf("FP-Tree for Block %d:\n", blockIdx.x);
 
-            // Generate all subsets
-            int totalSubsets = 1 << itemCount; // 2^itemCount
-            offsetFromStart[threadIdx.x] = pow(2, itemCount);
-            __syncthreads();
-            if(tid == 23640){
-                int beginningOffset = 0;
-              for (int mask = 0; mask < totalSubsets; mask++) {
-                    int lengthOfKey = 0;
-                    int index = 0;
-                    char* sentence = (char*) malloc(2056 * sizeof(char));
-
-                    for (int i = 0; i < itemCount; i++) {
-                        if (mask & (1 << i)) { 
-                            // store the subset as int in var
-                            int subset = items[i];
-                            int count = 0; // keeps track of subset's length of characters
-                            while (subset != 0) {
-                                count++;
-                                subset = subset / 10; 
-                            }
-
-                            // add each characrter
-                            subset = items[i];
-                            for (int h = 0; h < count; h++) {
-                                int num = subset; 
-                                for (int g = 0; g < h; g++) { num = num / 10; }
-                                num = num % 10; 
-
-                                sentence[index] = num + '0';
-                                index++;
-                            } sentence[index] = ' '; index++; 
-                        }
-                    }
-                    
-                    //suppose I had the concatinated string here
-                    printf("Sentence: %s \n", sentence);
-                    free(sentence);
-                }
-                for(int j = 0; j < threadIdx.x; j++){
-                    beginningOffset = beginningOffset + offsetFromStart[j];
-                }
-                printf("we will begin to write into the shared memory at %d\n", beginningOffset);
-
-            }
-        if(tid == 23640){
-            printf("block offset to tid %d is %d\n", threadIdx.x, offsetFromStart[threadIdx.x]);
+        *nodeCounter = 1;  // Root node is index 0
+        for (int i = 0; i < MAX_NODES; i++) {
+            itemsInNode[i] = EMPTY;
+            counts[i] = 0;
+            parents[i] = EMPTY;
+            firstChild[i] = EMPTY;
+            nextSibling[i] = EMPTY;
         }
     }
+    __syncthreads();
+
+    // Parse the input and build the FP-Tree
+    if (tid < totalRecords) {
+        // Parse the transaction data
+        char* line = inData + d_Offsets[tid];
+        int items[32];  // Local array to store items in the transaction
+        int itemCount = 0;
+        int number = 0;
+        bool inNumber = false;
+
+        // Extract items from the input line
+        for (char* current = line; *current != '\n' && *current != '\0'; current++) {
+            if (*current >= '0' && *current <= '9') {
+                number = number * 10 + (*current - '0');
+                inNumber = true;
+            } else if (inNumber) {
+                items[itemCount++] = number;
+                number = 0;
+                inNumber = false;
+            }
+        }
+        if (inNumber) {
+            items[itemCount++] = number;
+        }
+
+        // Generate all subsets and insert into the FP-Tree
+        int totalSubsets = 1 << itemCount;  // 2^itemCount
+        for (int mask = 0; mask < totalSubsets; mask++) {
+            int parentNode = 0;  // Start at the root for each subset
+            for (int i = 0; i < itemCount; i++) {
+                if (mask & (1 << i)) {
+                    int item = items[i];
+
+                    // Search for the child node with this item
+                    int childNode = firstChild[parentNode];
+                    while (childNode != EMPTY && itemsInNode[childNode] != item) {
+                        childNode = nextSibling[childNode];
+                    }
+
+                    // If the item doesn't exist, create a new node
+                    if (childNode == EMPTY) {
+                        int newNodeIndex = atomicAdd(nodeCounter, 1);
+                        if (newNodeIndex < MAX_NODES) {
+                            itemsInNode[newNodeIndex] = item;
+                            counts[newNodeIndex] = 1;  // Initialize count
+                            parents[newNodeIndex] = parentNode;
+                            firstChild[newNodeIndex] = EMPTY;
+                            nextSibling[newNodeIndex] = EMPTY;
+
+                            // Link to parent's child list
+                            if (atomicCAS(&firstChild[parentNode], EMPTY, newNodeIndex) != EMPTY) {
+                                int sibling = firstChild[parentNode];
+                                while (atomicCAS(&nextSibling[sibling], EMPTY, newNodeIndex) != EMPTY) {
+                                    sibling = nextSibling[sibling];
+                                }
+                            }
+                            childNode = newNodeIndex;
+                        }
+                    } else {
+                        // Increment the count for an existing node
+                        atomicAdd(&counts[childNode], 1);
+                    }
+
+                    // Move to the child node
+                    parentNode = childNode;
+                }
+            }
+        }
+        __syncthreads();
+
+        // Debugging: Print the FP-Tree for this block (only one thread does this)
+        if (tid == 65000) {
+            printf("FP-Tree for Block %d:\n", blockIdx.x);
+            for (int i = 0; i < *nodeCounter; i++) {
+                printf("Node %d: Item=%d, Count=%d, Parent=%d, FirstChild=%d, NextSibling=%d\n",
+                    i, itemsInNode[i], counts[i], parents[i], firstChild[i], nextSibling[i]);
+            }
+        }
+    }
+
+
+    
 }
 
 
-__global__ void printStuff(float *test_matrix, float *train_matrix, 
-int numElements, int train_num_instances, int k, int num_attributes, int num_classes, int *predictionsGlobal, int testNumInstances, int stream, int testNumInstancePerStream){
+
+__global__ void printStuff(float *test_matrix, float *train_matrix, int numElements, int train_num_instances, int k, int num_attributes, int num_classes, int *predictionsGlobal, int testNumInstances, int stream, int testNumInstancePerStream){
     
     //threadid within this block
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -224,7 +254,7 @@ int numElements, int train_num_instances, int k, int num_attributes, int num_cla
 
 // Implements a threaded kNN where for each candidate query an in-place priority queue is maintained to identify the nearest neighbors
 int KNN() {     
-        int lineCountInDataset = 1692082;
+    int lineCountInDataset = 1692082;
     const char* inDataFilePath = "sortedDataBase.txt";
 
     FILE* file = fopen(inDataFilePath, "r");
@@ -260,7 +290,7 @@ int KNN() {
     // Read the file into the host buffer
     fread(h_text, 1, file_size, file);
     //fclose(file);
-
+    size_t sharedMemSize = (5 * MAX_NODES + 1) * sizeof(int);  // 5 arrays + nodeCounter
     // Allocate memory on the GPU
     char* d_text;
     int* d_offsets; 
@@ -271,50 +301,13 @@ int KNN() {
     cudaMemcpy(d_offsets, h_offsets, lineCountInDataset * sizeof(int), cudaMemcpyHostToDevice);
     int threadsPerBlock = 256;
     int blocksPerGrid = ((lineCountInDataset + threadsPerBlock) - 1) /  threadsPerBlock; //how do we know how many blocks we need to use?
-
+    printf("number of threads is roughly %d\n", threadsPerBlock*blocksPerGrid);
     //1_692_082 lineCount of Sorted DataBase
     int minItemCount = 3; //setting the minimum # of items to be considered an itemset
 
     //here I would want to generate all itemsets
-    // Define sentinel values
-    constexpr int empty_key = -1;   // An invalid key value
-    constexpr int empty_value = -1; // An invalid value
-    constexpr int erased_key = -2;  // An erased key marker
 
-    // Initial capacity of the map
-    std::size_t initial_capacity = 1024;
-
-    // Create the map
-    cuco::dynamic_map<int, int> global_map(
-        initial_capacity,                // Initial capacity
-        cuco::empty_key{empty_key},      // Empty key sentinel
-        cuco::empty_value{empty_value},  // Empty value sentinel
-        cuco::erased_key{erased_key}     // Erased key sentinel
-    );
-
-
-    // Allocate memory for the hashmaps on the device
-    cuco::dynamic_map<int, int>* d_hashmaps;
-    int numHashmaps = blocksPerGrid;
-
-    cudaMalloc(&d_hashmaps, numHashmaps * sizeof(cuco::dynamic_map<int, int>));
-
-    // Initialize hashmaps on the host
-    for (int i = 0; i < numHashmaps; i++) {
-        cuco::dynamic_map<int, int> h_map(
-            initial_capacity,
-            cuco::empty_key{empty_key},
-            cuco::empty_value{empty_value},
-            cuco::erased_key{erased_key}
-        );
-
-        // Copy the constructed hashmap to the device
-        cudaMemcpy(&d_hashmaps[i], &h_map, sizeof(cuco::dynamic_map<int, int>), cudaMemcpyHostToDevice);
-    }
-
-
-
-    processItemSets<<<blocksPerGrid, threadsPerBlock>>>(d_text, minItemCount, d_offsets, lineCountInDataset, d_hashmaps);
+    processItemSets<<<blocksPerGrid, threadsPerBlock, sharedMemSize>>>(d_text, minItemCount, d_offsets, lineCountInDataset);
     cudaDeviceSynchronize();
     return 1;
 
