@@ -30,17 +30,19 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
     extern __shared__ int sharedMemory[];
 
     // Assign sections of shared memory to arrays
-    int* itemsInNode = &sharedMemory[0];                       // Item at each node
-    int* counts = &sharedMemory[MAX_NODES];                    // Support count at each node
-    int* parents = &sharedMemory[2 * MAX_NODES];               // Parent index for each node
-    int* firstChild = &sharedMemory[3 * MAX_NODES];            // First child index for each node
-    int* nextSibling = &sharedMemory[4 * MAX_NODES];           // Next sibling index for each node
-    int* nodeCounter = &sharedMemory[5 * MAX_NODES];           // Counter for nodes in the block (single value)
+    int* mutex = &sharedMemory[0];
+    int* itemsInNode = &sharedMemory[1];                       // Item at each node
+    int* counts = &sharedMemory[1 + MAX_NODES];                    // Support count at each node
+    int* parents = &sharedMemory[1 + 2 * MAX_NODES];               // Parent index for each node
+    int* firstChild = &sharedMemory[1 + 3 * MAX_NODES];            // First child index for each node
+    int* nextSibling = &sharedMemory[1 + 4 * MAX_NODES];           // Next sibling index for each node
+    int* nodeCounter = &sharedMemory[1 + 5 * MAX_NODES];           // Counter for nodes in the block (single value)
+    
 
     // Initialize the shared memory (done by thread 0 in each block)
     if (threadIdx.x == 0) {
         //printf("FP-Tree for Block %d:\n", blockIdx.x);
-
+        *mutex = 0;
         *nodeCounter = 1;  // Root node is index 0
         for (int i = 0; i < MAX_NODES; i++) {
             itemsInNode[i] = EMPTY;
@@ -53,10 +55,11 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
     __syncthreads();
 
     // Parse the input and build the FP-Tree
-    if (tid < totalRecords) {
+    // if (tid < totalRecords) {
+    if(blockIdx.x == 0){
         // Parse the transaction data
         char* line = inData + d_Offsets[tid];
-        int items[64];  // Local array to store items in the transaction
+        int items[32];  // Local array to store items in the transaction
         int itemCount = 0;
         int number = 0;
         bool inNumber = false;
@@ -84,38 +87,54 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
                 if (mask & (1 << i)) {
                     int item = items[i];
 
-                    // Search for the child node with this item
-                    int childNode = firstChild[parentNode];
-                    while (childNode != EMPTY && itemsInNode[childNode] != item) {
-                        childNode = nextSibling[childNode];
-                    }
-                    
-                    // If the item doesn't exist, create a new node
-                    if (childNode == EMPTY) {
-                        int newNodeIndex = atomicAdd(nodeCounter, 1);
-                        if (newNodeIndex < MAX_NODES) {
-                            itemsInNode[newNodeIndex] = item;
-                            counts[newNodeIndex] = 1;  // Initialize count
-                            parents[newNodeIndex] = parentNode;
-                            firstChild[newNodeIndex] = EMPTY;
-                            nextSibling[newNodeIndex] = EMPTY;
-
-                            // Link to parent's child list
-                            if (atomicCAS(&firstChild[parentNode], EMPTY, newNodeIndex) != EMPTY) {
-                                int sibling = firstChild[parentNode];
-                                while (atomicCAS(&nextSibling[sibling], EMPTY, newNodeIndex) != EMPTY) {
-                                    sibling = nextSibling[sibling];
-                                }
+                    bool isSet = false; 
+                    do 
+                    {
+                        if (isSet = atomicCAS(mutex, 0, 1) == 0) {
+                            // Search for the child node with this item
+                            int childNode = firstChild[parentNode];
+                            while (childNode != EMPTY && itemsInNode[childNode] != item) {
+                                childNode = nextSibling[childNode];
                             }
-                            childNode = newNodeIndex;
-                        }
-                    } else {
-                        // Increment the count for an existing node
-                        atomicAdd(&counts[childNode], 1);
-                    }
+                            
+                            // If the item doesn't exist, create a new node
+                            if (childNode == EMPTY) {
+                                int newNodeIndex = atomicAdd(nodeCounter, 1);
+                                if (newNodeIndex < MAX_NODES) {
+                                    //itemsInNode[newNodeIndex] = item;
+                                    atomicExch(&itemsInNode[newNodeIndex], item);
+                                    //counts[newNodeIndex] = 1;  // Initialize count
+                                    atomicExch(&counts[newNodeIndex], 1);
+                                    // parents[newNodeIndex] = parentNode;
+                                    atomicExch(&parents[newNodeIndex], parentNode);
+                                    // firstChild[newNodeIndex] = EMPTY;
+                                    atomicExch(&firstChild[newNodeIndex], EMPTY);
+                                    // nextSibling[newNodeIndex] = EMPTY;
+                                    atomicExch(&nextSibling[newNodeIndex], EMPTY);
 
-                    // Move to the child node
-                    parentNode = childNode;
+                                    // Link to parent's child list
+                                    if (atomicCAS(&firstChild[parentNode], EMPTY, newNodeIndex) != EMPTY) {
+                                        int sibling = firstChild[parentNode];
+                                        while (atomicCAS(&nextSibling[sibling], EMPTY, newNodeIndex) != EMPTY) {
+                                            sibling = nextSibling[sibling];
+                                        }
+                                    }
+                                    childNode = newNodeIndex;
+                                }
+                        } else {
+                            // Increment the count for an existing node
+                            atomicAdd(&counts[childNode], 1);
+                        }
+
+                        // Move to the child node
+                        parentNode = childNode;
+                        }
+                        if (isSet) 
+                        {
+                            atomicExch(mutex, 0);
+                        }
+                     } 
+                while (!isSet); 
                 }
             }
         }
@@ -292,7 +311,7 @@ int KNN() {
     // Read the file into the host buffer
     fread(h_text, 1, file_size, file);
     //fclose(file);
-    size_t sharedMemSize = (6 * MAX_NODES) * sizeof(int) + 1 * sizeof(int);  // 5 arrays + nodeCounter
+    size_t sharedMemSize = (6 * MAX_NODES) * sizeof(int) +  2 * sizeof(int) ;  // 5 arrays + nodeCounter
     // Allocate memory on the GPU
     char* d_text;
     int* d_offsets; 
@@ -301,7 +320,7 @@ int KNN() {
     // Copy the file contents to the GPU
     cudaMemcpy(d_text, h_buffer, file_size, cudaMemcpyHostToDevice);
     cudaMemcpy(d_offsets, h_offsets, lineCountInDataset * sizeof(int), cudaMemcpyHostToDevice);
-    int threadsPerBlock = 32;
+    int threadsPerBlock = 256;
     int blocksPerGrid = ((lineCountInDataset + threadsPerBlock) - 1) /  threadsPerBlock; //how do we know how many blocks we need to use?
     printf("number of threads is roughly %d\n", threadsPerBlock*blocksPerGrid);
     //1_692_082 lineCount of Sorted DataBase
@@ -309,6 +328,7 @@ int KNN() {
 
     //here I would want to generate all itemsets
     cudaFuncSetAttribute(processItemSets, cudaFuncAttributeMaxDynamicSharedMemorySize, 164 * 1024);
+
     processItemSets<<<blocksPerGrid, threadsPerBlock, sharedMemSize>>>(d_text, minItemCount, d_offsets, lineCountInDataset);
     cudaDeviceSynchronize();
     return 1;
