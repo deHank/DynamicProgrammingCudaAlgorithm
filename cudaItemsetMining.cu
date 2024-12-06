@@ -32,11 +32,11 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
     // Assign sections of shared memory to arrays
     int* mutex = &sharedMemory[0];
     int* itemsInNode = &sharedMemory[1];                       // Item at each node
-    int* counts = &sharedMemory[1 + MAX_NODES];                    // Support count at each node
-    int* parents = &sharedMemory[1 + 2 * MAX_NODES];               // Parent index for each node
-    int* firstChild = &sharedMemory[1 + 3 * MAX_NODES];            // First child index for each node
-    int* nextSibling = &sharedMemory[1 + 4 * MAX_NODES];           // Next sibling index for each node
-    int* nodeCounter = &sharedMemory[1 + 5 * MAX_NODES];           // Counter for nodes in the block (single value)
+    int* counts = &sharedMemory[2 + MAX_NODES];                    // Support count at each node
+    int* parents = &sharedMemory[2 + 2 * MAX_NODES];               // Parent index for each node
+    int* firstChild = &sharedMemory[2 + 3 * MAX_NODES];            // First child index for each node
+    int* nextSibling = &sharedMemory[2 + 4 * MAX_NODES];           // Next sibling index for each node
+    int* nodeCounter = &sharedMemory[2 + 5 * MAX_NODES];           // Counter for nodes in the block (single value)
     
 
     // Initialize the shared memory (done by thread 0 in each block)
@@ -55,8 +55,8 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
     __syncthreads();
 
     // Parse the input and build the FP-Tree
-    // if (tid < totalRecords) {
-    if(blockIdx.x == 0){
+    if (tid < totalRecords) {
+    // if(blockIdx.x == 0){
         // Parse the transaction data
         char* line = inData + d_Offsets[tid];
         int items[32];  // Local array to store items in the transaction
@@ -121,13 +121,13 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
                                     }
                                     childNode = newNodeIndex;
                                 }
-                        } else {
-                            // Increment the count for an existing node
-                            atomicAdd(&counts[childNode], 1);
-                        }
+                            } else {
+                                // Increment the count for an existing node
+                                atomicAdd(&counts[childNode], 1);
+                            }
 
-                        // Move to the child node
-                        parentNode = childNode;
+                            // Move to the child node
+                            parentNode = childNode;
                         }
                         if (isSet) 
                         {
@@ -141,7 +141,7 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
         __syncthreads();
 
         // Debugging: Print the FP-Tree for this block (only one thread does this)
-        if (tid == 0) {
+        if (tid == 52000) {
             printf("FP-Tree for Block %d:\n", blockIdx.x);
             for (int i = 0; i < *nodeCounter; i++) {
                 printf("Node %d: Item=%d, Count=%d, Parent=%d, FirstChild=%d, NextSibling=%d\n",
@@ -311,7 +311,7 @@ int KNN() {
     // Read the file into the host buffer
     fread(h_text, 1, file_size, file);
     //fclose(file);
-    size_t sharedMemSize = (6 * MAX_NODES) * sizeof(int) +  2 * sizeof(int) ;  // 5 arrays + nodeCounter
+    size_t sharedMemSize = (6 * MAX_NODES) * sizeof(int) +  1 * sizeof(int) ;  // 5 arrays + nodeCounter
     // Allocate memory on the GPU
     char* d_text;
     int* d_offsets; 
@@ -320,7 +320,7 @@ int KNN() {
     // Copy the file contents to the GPU
     cudaMemcpy(d_text, h_buffer, file_size, cudaMemcpyHostToDevice);
     cudaMemcpy(d_offsets, h_offsets, lineCountInDataset * sizeof(int), cudaMemcpyHostToDevice);
-    int threadsPerBlock = 256;
+    int threadsPerBlock = 32;
     int blocksPerGrid = ((lineCountInDataset + threadsPerBlock) - 1) /  threadsPerBlock; //how do we know how many blocks we need to use?
     printf("number of threads is roughly %d\n", threadsPerBlock*blocksPerGrid);
     //1_692_082 lineCount of Sorted DataBase
