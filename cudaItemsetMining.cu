@@ -280,10 +280,11 @@ int KNN() {
     }
 
     //create hash table (<itemset : count>)
-    std::unordered_map<int, int> map;
-
+    std::unordered_map<std::string, int> itemsetMap;
     int totalNodes = 0;
     // traverse all nodes 
+
+
    for (int i = 0; i < blocksPerGrid; i++) {
         int numNodesInBlock = h_treeSizes[i];
         totalNodes += numNodesInBlock; 
@@ -291,7 +292,7 @@ int KNN() {
         for (int j = 0; j < numNodesInBlock; j++) {
 
             // if is an unporcessed leaf, follow back up to the parent and print the itemsets on one line. make sure to keep track of count
-            if ( h_fpSubtrees[maxNodesPerBlock * i + j].count > 0 &&  h_fpSubtrees[maxNodesPerBlock * i + j].firstChild == -1) {
+            while(h_fpSubtrees[maxNodesPerBlock * i + j].count > 0 &&  h_fpSubtrees[maxNodesPerBlock * i + j].firstChild == -1) {
                 int count = 1; 
                 h_fpSubtrees[maxNodesPerBlock * i + j].count += -1;
                 char buffer[512] = ""; // will be used to build the itemset string
@@ -316,26 +317,39 @@ int KNN() {
                         sprintf(itemToAdd, "%d ", nodeItemSet); 
                         strcat(buffer, itemToAdd);
 
+                        
+
                         //fprintf(resultsFile, "%d ", nodeItemSet);
                     } 
 
                     // mark as processed and move to next parent
                     h_fpSubtrees[maxNodesPerBlock * i + currParentId].processed = 1;
-                     h_fpSubtrees[maxNodesPerBlock * i + currParentId].count -= 1;
+                     h_fpSubtrees[maxNodesPerBlock * i + currParentId].count += -1;
                     currParentId = h_fpSubtrees[maxNodesPerBlock * i + currParentId].parent;
                 } 
 
                 // finally print the count on the line 
                 if (count != 0) { // avoids the empty set count edge case 
-                    if (count > 2) {
+                    // if (count > 2) {
                         // add count to the end of the itemset line string we will write
                         char countToAdd[32]; 
-                        sprintf(countToAdd, "(%d)\n", count); 
-                        strcat(buffer, countToAdd);
+                        //sprintf(countToAdd, "(%d)\n", count); 
+                        //strcat(buffer, countToAdd);
 
-                        fputs(buffer, resultsFile);
+                        //fputs(buffer, resultsFile);
+
+                        // Store the itemset in the map
+                        std::string itemsetKey(buffer);
+                        // If the itemset already exists, increment its count; otherwise, insert it
+                        if (itemsetMap.find(itemsetKey) != itemsetMap.end()) {
+                            itemsetMap[itemsetKey]++;
+                        } else {
+                            itemsetMap[itemsetKey] = 1;
+                        }
+
+
                         //fprintf(resultsFile, "(%d)\n", count);
-                    }
+                    //}
                 }
             }
 
@@ -347,6 +361,19 @@ int KNN() {
             //     h_fpSubtrees[maxNodesPerBlock * i + j].nextSibling);    
         }
     }
+
+        // Filter and process the hashmap
+    for (const auto& [itemset, freq] : itemsetMap) {
+        if (freq >= 3) {
+            // Print to console
+            std::cout << "Itemset: " << itemset << " -> Count: " << freq << "\n";
+            
+            // Save to file
+            fprintf(resultsFile, "Itemset: %s -> Count: %d\n", itemset.c_str(), freq);
+        }
+    }
+
+
 
     fclose(resultsFile);
     //printf("Proccessed %d nodes\n", totalNodes);
