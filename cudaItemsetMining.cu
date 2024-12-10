@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <iostream>
 #include <string.h>
+#include <time.h>
 
 #define MAX_NODES 6000  // Maximum nodes in the FP-Tree
 #define EMPTY -1
@@ -190,7 +191,10 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
 }
 
 // Implements a threaded kNN where for each candidate query an in-place priority queue is maintained to identify the nearest neighbors
-int KNN() {     
+int KNN() {   
+    clock_t cpu_start_withSetup = clock();
+    
+    clock_t setupTimeStart = clock();
     int lineCountInDataset = 55012;
     const char* inDataFilePath = "sortedDataBase.txt";
 
@@ -218,7 +222,7 @@ int KNN() {
             
         }
     }
-
+    
     // Allocate memory to hold the file contents
     char* h_text = (char*)malloc(file_size);
 
@@ -238,8 +242,8 @@ int KNN() {
     cudaMemcpy(d_offsets, h_offsets, lineCountInDataset * sizeof(int), cudaMemcpyHostToDevice);
     int threadsPerBlock = 32;
     int blocksPerGrid = ((lineCountInDataset + threadsPerBlock) - 1) /  threadsPerBlock; //how do we know how many blocks we need to use?
-    printf("BlocksPerGrid = %d\n", blocksPerGrid);
-    printf("number of threads is roughly %d\n", threadsPerBlock*blocksPerGrid);
+    //printf("BlocksPerGrid = %d\n", blocksPerGrid);
+    //printf("number of threads is roughly %d\n", threadsPerBlock*blocksPerGrid);
 
     // allocate space for the fpSubstree node list in GPU
     Node* d_fpSubtrees;
@@ -253,9 +257,23 @@ int KNN() {
 
     //here I would want to generate all itemsets
     cudaFuncSetAttribute(processItemSets, cudaFuncAttributeMaxDynamicSharedMemorySize, 164 * 1024);
+    clock_t setupTimeEnd = clock();
 
+    cudaEvent_t startEvent, stopEvent;
+    cudaEventCreate(&startEvent);
+    cudaEventCreate(&stopEvent);
+    float cudaElapsedTime;
+
+    
+    cudaEventRecord(startEvent);
     processItemSets<<<blocksPerGrid, threadsPerBlock, sharedMemSize>>>(d_text, minItemCount, d_offsets, lineCountInDataset, d_fpSubtrees, d_treeSizes, blocksPerGrid);
     cudaDeviceSynchronize();
+    cudaEventRecord(stopEvent);
+    cudaEventSynchronize(stopEvent);
+
+    // Print the elapsed time (milliseconds)
+    cudaEventElapsedTime(&cudaElapsedTime, startEvent, stopEvent);
+    printf("CUDA Kernel Execution Time: %.3f ms\n", cudaElapsedTime);
 
     // ensure there are no kernel errors
     cudaError_t cudaError = cudaGetLastError();
@@ -264,6 +282,7 @@ int KNN() {
         exit(EXIT_FAILURE);
     }
 
+    clock_t retrieveGPUResultsStart = clock();
     // copy each block's fp subtree nodes back to host (CPU)
     Node* h_fpSubtrees = (Node*)malloc(blocksPerGrid * maxNodesPerBlock * sizeof(Node));
     int* h_treeSizes = (int*)malloc(blocksPerGrid * sizeof(int));
@@ -271,7 +290,8 @@ int KNN() {
     // copy the blocks' subtrees + subtree counts to host 
     cudaMemcpy(h_fpSubtrees, d_fpSubtrees, blocksPerGrid * maxNodesPerBlock * sizeof(Node), cudaMemcpyDeviceToHost);
     cudaMemcpy(h_treeSizes, d_treeSizes, blocksPerGrid * sizeof(int), cudaMemcpyDeviceToHost);
-    
+    clock_t retrieveGPUResultsEnd = clock();
+
     // global reduction will be written to file
     FILE *resultsFile = fopen("cudaItemSetMiningResults.txt", "w");
     if (resultsFile == NULL) {
@@ -282,9 +302,9 @@ int KNN() {
     //create hash table (<itemset : count>)
     std::unordered_map<std::string, int> itemsetMap;
     int totalNodes = 0;
-    // traverse all nodes 
-
-
+    
+    clock_t cpu_start = clock();
+    // traverse all nodes
    for (int i = 0; i < blocksPerGrid; i++) {
         int numNodesInBlock = h_treeSizes[i];
         totalNodes += numNodesInBlock; 
@@ -362,20 +382,34 @@ int KNN() {
         }
     }
 
-        // Filter and process the hashmap
+    clock_t cpu_end = clock();
+    // Filter and process the hashmap
     for (const auto& [itemset, freq] : itemsetMap) {
         if (freq >= 3) {
             // Print to console
-            std::cout << "Itemset: " << itemset << " -> Count: " << freq << "\n";
+            //std::cout << "Itemset: " << itemset << " -> Count: " << freq << "\n";
             
             // Save to file
             fprintf(resultsFile, "Itemset: %s -> Count: %d\n", itemset.c_str(), freq);
         }
     }
 
-
-
     fclose(resultsFile);
+    
+
+    // Record end time
+    clock_t cpu_end_withSetup = clock();
+    // Calculate elapsed time in milliseconds
+    float cpuElapsedTime = ((float)(cpu_end - cpu_start)) / CLOCKS_PER_SEC * 1000.0;
+    float cpuElapsedTimeSetup = ((float)(cpu_end_withSetup - cpu_start_withSetup)) / CLOCKS_PER_SEC * 1000.0;
+    float setupTime = ((float)(setupTimeEnd - setupTimeStart)) / CLOCKS_PER_SEC * 1000.0;
+    float gpuRetrievalTime = ((float)(retrieveGPUResultsEnd - retrieveGPUResultsStart)) / CLOCKS_PER_SEC * 1000.0;
+
+    printf("CPU Execution Time: %.3f ms\n", cpuElapsedTime);
+    printf("Total Runtime: %.3f ms\n", cudaElapsedTime + cpuElapsedTime);
+    printf("Total Runtime (with setup/file write): %.3f ms\n", cpuElapsedTimeSetup);
+    printf("Total Setup Time: %.3f ms\n", setupTime);
+    printf("Total GPU Results Retrieval Time: %.3f ms\n", gpuRetrievalTime);
     //printf("Proccessed %d nodes\n", totalNodes);
     // // Print the aggregated counts (if has no child then follow up to the parent)
     // printf("{ ");
