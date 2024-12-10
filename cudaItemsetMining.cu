@@ -291,8 +291,9 @@ int KNN() {
         for (int j = 0; j < numNodesInBlock; j++) {
 
             // if is an unporcessed leaf, follow back up to the parent and print the itemsets on one line. make sure to keep track of count
-            if ( h_fpSubtrees[maxNodesPerBlock * i + j].processed != 1 &&  h_fpSubtrees[maxNodesPerBlock * i + j].firstChild == -1) {
-                int count = 0; 
+            if ( h_fpSubtrees[maxNodesPerBlock * i + j].count > 0 &&  h_fpSubtrees[maxNodesPerBlock * i + j].firstChild == -1) {
+                int count = 1; 
+                h_fpSubtrees[maxNodesPerBlock * i + j].count += -1;
                 char buffer[512] = ""; // will be used to build the itemset string
                 int currParentId = h_fpSubtrees[maxNodesPerBlock * i + j].parent; // stores id of parent node 
 
@@ -305,9 +306,11 @@ int KNN() {
 
                 // follow back up until we reach the root of this path that led to leaf
                 while (currParentId != -1) { 
+                    //h_fpSubtrees[maxNodesPerBlock * i + currParentId].count += 1;
                     int nodeItemSet = h_fpSubtrees[maxNodesPerBlock * i + currParentId].itemSet;
                     
-                    count+= h_fpSubtrees[maxNodesPerBlock * i + currParentId].count - 1;
+                    //count+= h_fpSubtrees[maxNodesPerBlock * i + currParentId].count - 1;
+                    h_fpSubtrees[maxNodesPerBlock * i + currParentId].count += -1;
                     if (nodeItemSet != -1) { // don't print empty set 
                         char itemToAdd[32]; 
                         sprintf(itemToAdd, "%d ", nodeItemSet); 
@@ -318,12 +321,13 @@ int KNN() {
 
                     // mark as processed and move to next parent
                     h_fpSubtrees[maxNodesPerBlock * i + currParentId].processed = 1;
+                     h_fpSubtrees[maxNodesPerBlock * i + currParentId].count -= 1;
                     currParentId = h_fpSubtrees[maxNodesPerBlock * i + currParentId].parent;
                 } 
 
                 // finally print the count on the line 
                 if (count != 0) { // avoids the empty set count edge case 
-                    if (count > 3) {
+                    if (count > 2) {
                         // add count to the end of the itemset line string we will write
                         char countToAdd[32]; 
                         sprintf(countToAdd, "(%d)\n", count); 
