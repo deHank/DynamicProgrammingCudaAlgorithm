@@ -4,13 +4,16 @@
 #include <bits/stdc++.h>
 #include <cuda_runtime.h>
 #include <cuco/dynamic_map.cuh>
-
+#include <unordered_map>
+#include <iostream>
+#include <string.h>
 
 #define MAX_NODES 6000  // Maximum nodes in the FP-Tree
 #define EMPTY -1
 
 typedef struct {
     int id; 
+    int processed; // 1 signifies it was processed
     int itemSet;
     int count; 
     int parent;
@@ -167,6 +170,7 @@ __global__ void processItemSets(char *inData, int minimumSetNum, int *d_Offsets,
                 d_fpSubtrees[max * blockIdx.x + numOfNodes].parent = parents[i];
                 d_fpSubtrees[max * blockIdx.x + numOfNodes].firstChild = firstChild[i];
                 d_fpSubtrees[max * blockIdx.x + numOfNodes].nextSibling = nextSibling[i];
+                d_fpSubtrees[max * blockIdx.x + numOfNodes].id = i; // set id of node
 
                 // printf("DP Node %d: Item=%d, Count=%d, Parent=%d, FirstChild=%d, NextSibling=%d\n",
                 //     i, d_fpSubtrees[max * blockIdx.x + numOfNodes].itemSet, d_fpSubtrees[max * blockIdx.x + numOfNodes].count, d_fpSubtrees[max * blockIdx.x + numOfNodes].parent, 
@@ -268,18 +272,85 @@ int KNN() {
     cudaMemcpy(h_fpSubtrees, d_fpSubtrees, blocksPerGrid * maxNodesPerBlock * sizeof(Node), cudaMemcpyDeviceToHost);
     cudaMemcpy(h_treeSizes, d_treeSizes, blocksPerGrid * sizeof(int), cudaMemcpyDeviceToHost);
     
+    // global reduction will be written to file
+    FILE *resultsFile = fopen("cudaItemSetMiningResults.txt", "w");
+    if (resultsFile == NULL) {
+        perror("Error opening results file");
+        return 1;
+    }
+
+    //create hash table (<itemset : count>)
+    std::unordered_map<int, int> map;
+
+    int totalNodes = 0;
     // traverse all nodes 
    for (int i = 0; i < blocksPerGrid; i++) {
         int numNodesInBlock = h_treeSizes[i];
+        totalNodes += numNodesInBlock; 
+        //printf("Block %d has %d nodes\n", i, numNodesInBlock);
         for (int j = 0; j < numNodesInBlock; j++) {
-            printf("Node %d: Item=%d, Count=%d, Parent=%d, FirstChild=%d, NextSibling=%d\n",
-                j, h_fpSubtrees[maxNodesPerBlock * i + j].itemSet, 
-                h_fpSubtrees[maxNodesPerBlock * i + j].count, 
-                h_fpSubtrees[maxNodesPerBlock * i + j].parent, 
-                h_fpSubtrees[maxNodesPerBlock * i + j].firstChild, 
-                h_fpSubtrees[maxNodesPerBlock * i + j].nextSibling);
+
+            // if is an unporcessed leaf, follow back up to the parent and print the itemsets on one line. make sure to keep track of count
+            if ( h_fpSubtrees[maxNodesPerBlock * i + j].processed != 1 &&  h_fpSubtrees[maxNodesPerBlock * i + j].firstChild == -1) {
+                int count = 0; 
+                char buffer[512] = ""; // will be used to build the itemset string
+                int currParentId = h_fpSubtrees[maxNodesPerBlock * i + j].parent; // stores id of parent node 
+
+                // include the leaf itself
+                if (h_fpSubtrees[maxNodesPerBlock * i + j].itemSet != -1) {
+                    char itemToAdd[32];
+                    sprintf(itemToAdd, "%d ", h_fpSubtrees[maxNodesPerBlock * i + j].itemSet);
+                    strcat(buffer, itemToAdd);
+                }
+
+                // follow back up until we reach the root of this path that led to leaf
+                while (currParentId != -1) { 
+                    int nodeItemSet = h_fpSubtrees[maxNodesPerBlock * i + currParentId].itemSet;
+                    
+                    count+= h_fpSubtrees[maxNodesPerBlock * i + currParentId].count - 1;
+                    if (nodeItemSet != -1) { // don't print empty set 
+                        char itemToAdd[32]; 
+                        sprintf(itemToAdd, "%d ", nodeItemSet); 
+                        strcat(buffer, itemToAdd);
+
+                        //fprintf(resultsFile, "%d ", nodeItemSet);
+                    } 
+
+                    // mark as processed and move to next parent
+                    h_fpSubtrees[maxNodesPerBlock * i + currParentId].processed = 1;
+                    currParentId = h_fpSubtrees[maxNodesPerBlock * i + currParentId].parent;
+                } 
+
+                // finally print the count on the line 
+                if (count != 0) { // avoids the empty set count edge case 
+                    if (count > 3) {
+                        // add count to the end of the itemset line string we will write
+                        char countToAdd[32]; 
+                        sprintf(countToAdd, "(%d)\n", count); 
+                        strcat(buffer, countToAdd);
+
+                        fputs(buffer, resultsFile);
+                        //fprintf(resultsFile, "(%d)\n", count);
+                    }
+                }
+            }
+
+            // printf("Node %d: Item=%d, Count=%d, Parent=%d, FirstChild=%d, NextSibling=%d\n",
+            //     j, h_fpSubtrees[maxNodesPerBlock * i + j].itemSet, 
+            //     h_fpSubtrees[maxNodesPerBlock * i + j].count, 
+            //     h_fpSubtrees[maxNodesPerBlock * i + j].parent, 
+            //     h_fpSubtrees[maxNodesPerBlock * i + j].firstChild, 
+            //     h_fpSubtrees[maxNodesPerBlock * i + j].nextSibling);    
         }
     }
+
+    fclose(resultsFile);
+    //printf("Proccessed %d nodes\n", totalNodes);
+    // // Print the aggregated counts (if has no child then follow up to the parent)
+    // printf("{ ");
+    // for (const auto& [itemSet, count] : map) {
+    //     std::cout << itemSet << ": " << count << '\n';
+    // } printf("}");
     return 1;
 }
 
